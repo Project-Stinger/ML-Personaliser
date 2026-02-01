@@ -3,6 +3,9 @@ import { trainPipeline, crc32 } from "./train.js";
 const stepsEl = document.getElementById("steps");
 const logEl = document.getElementById("log");
 const spinnerEl = document.getElementById("spinner");
+const nnVizEl = document.getElementById("nnViz");
+const nnVizCanvasEl = document.getElementById("nnVizCanvas");
+const nnVizSubtitleEl = document.getElementById("nnVizSubtitle");
 const connEl = document.getElementById("conn");
 const btnReady = document.getElementById("btnReady");
 const btnDisconnect = document.getElementById("btnDisconnect");
@@ -10,6 +13,7 @@ const btnDownloadTrace = document.getElementById("btnDownloadTrace");
 const btnDownloadLog = document.getElementById("btnDownloadLog");
 const resultsEl = document.getElementById("results");
 const summaryEl = document.getElementById("summary");
+const metricsEl = document.getElementById("metrics");
 const shotGridEl = document.getElementById("shotGrid");
 const btnLoadModel = document.getElementById("btnLoadModel");
 const btnDownloadModels = document.getElementById("btnDownloadModels");
@@ -46,6 +50,298 @@ function trace(kind, msg) {
 }
 
 function setSpinner(on) { spinnerEl.classList.toggle("hidden", !on); }
+
+class MlpViz {
+  constructor(canvasEl, subtitleEl) {
+    this.canvas = canvasEl;
+    this.subtitleEl = subtitleEl;
+    this.active = false;
+    this._raf = 0;
+    this._t0 = 0;
+    this._lastSnapshot = null;
+    this._wScale = 1;
+  }
+
+  show() {
+    if (this.active) return;
+    this.active = true;
+    this._t0 = performance.now();
+    nnVizEl.classList.remove("hidden");
+    this._resizeCanvas();
+    this._raf = requestAnimationFrame(() => this._draw());
+  }
+
+  hide() {
+    this.active = false;
+    if (this._raf) cancelAnimationFrame(this._raf);
+    this._raf = 0;
+    nnVizEl.classList.add("hidden");
+  }
+
+  setSubtitle(text) { this.subtitleEl.textContent = text; }
+
+  updateSnapshot(snap) {
+    this._lastSnapshot = snap;
+    if (!snap?.w1 || !snap?.w2 || !snap?.w3) return;
+    const maxAbs = Math.max(maxAbsF32(snap.w1), maxAbsF32(snap.w2), maxAbsF32(snap.w3), 1e-6);
+    this._wScale = 1 / maxAbs;
+    this.setSubtitle(`Epoch ${snap.iter}/${snap.maxIter} · updating weights…`);
+  }
+
+  _resizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    const W = Math.min(980, nnVizEl.clientWidth - 40);
+    const H = 420;
+    this.canvas.width = Math.floor(W * dpr);
+    this.canvas.height = Math.floor(H * dpr);
+    this.canvas.style.width = W + "px";
+    this.canvas.style.height = H + "px";
+  }
+
+  _draw() {
+    if (!this.active) return;
+    const dpr = window.devicePixelRatio || 1;
+    const ctx = this.canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const W = parseFloat(this.canvas.style.width);
+    const H = parseFloat(this.canvas.style.height);
+    ctx.clearRect(0, 0, W, H);
+
+    // Background shimmer
+    ctx.fillStyle = "rgba(0,0,0,0.22)";
+    ctx.fillRect(0, 0, W, H);
+    const t = (performance.now() - this._t0) / 1000;
+    const g = ctx.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, `rgba(56,189,248,${0.06 + 0.02 * Math.sin(t * 1.7)})`);
+    g.addColorStop(0.5, `rgba(34,197,94,${0.05 + 0.02 * Math.cos(t * 1.3)})`);
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    this._drawNetwork(ctx, W, H);
+
+    this._raf = requestAnimationFrame(() => this._draw());
+  }
+
+  _drawNetwork(ctx, W, H) {
+    const pad = 22;
+    const t = (performance.now() - this._t0) / 1000;
+    const snap = this._lastSnapshot;
+
+    // Real network: 30→64→32→1. We draw a readable subset.
+    const nFeat = snap?.nFeat ?? 30;
+    const h1Size = snap?.h1Size ?? 64;
+    const h2Size = snap?.h2Size ?? 32;
+
+    const inN = 8;
+    const h1N = 12;
+    const h2N = 8;
+
+    const xIn = pad + 45;
+    const xH1 = pad + (W - pad * 2) * 0.40;
+    const xH2 = pad + (W - pad * 2) * 0.72;
+    const xOut = W - pad - 55;
+
+    const yTop = pad + 34;
+    const yBot = H - pad - 34;
+    const span = (yBot - yTop);
+    const yFor = (i, n) => yTop + (n === 1 ? span / 2 : (span * i) / (n - 1));
+
+    const pick = (nTotal, nShow) =>
+      Array.from({ length: nShow }, (_, i) => Math.floor((i / Math.max(1, nShow - 1)) * (nTotal - 1)));
+
+    const inIdx = pick(nFeat, inN);
+    const h1Idx = pick(h1Size, h1N);
+    const h2Idx = pick(h2Size, h2N);
+
+    const inPos = inIdx.map((_, i) => ({ x: xIn, y: yFor(i, inN) }));
+    const h1Pos = h1Idx.map((_, i) => ({ x: xH1, y: yFor(i, h1N) }));
+    const h2Pos = h2Idx.map((_, i) => ({ x: xH2, y: yFor(i, h2N) }));
+    const outPos = [{ x: xOut, y: yFor(0, 1) }];
+
+    const wScale = this._wScale || 1;
+
+    const edgeStyle = (w, phase) => {
+      const s = Math.tanh(Math.abs(w) * wScale * 2.3); // [0,1)
+      const a = 0.10 + 0.62 * s;
+      const lw = 0.6 + 2.8 * s;
+      const hue = w >= 0 ? 145 : 196; // green / blue
+      const col = `hsla(${hue}, 85%, 60%, ${a})`;
+      const dash = 10 + 18 * (1 - s) + 5 * Math.sin(phase);
+      return { col, lw, glow: 0.18 + 0.62 * s, dash };
+    };
+
+    const drawEdge = (a, b, w, phase) => {
+      const st = edgeStyle(w, phase);
+      ctx.save();
+      ctx.strokeStyle = st.col;
+      ctx.lineWidth = st.lw;
+      ctx.lineCap = "round";
+      ctx.setLineDash([st.dash, st.dash * 0.85]);
+      ctx.lineDashOffset = -t * (40 + 90 * st.glow);
+      ctx.shadowColor = st.col;
+      ctx.shadowBlur = 18 * st.glow;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      const cx = (a.x + b.x) / 2;
+      ctx.bezierCurveTo(cx, a.y, cx, b.y, b.x, b.y);
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    if (!snap?.w1 || !snap?.w2 || !snap?.w3) {
+      ctx.fillStyle = "rgba(154,164,178,0.9)";
+      ctx.font = "14px system-ui, sans-serif";
+      ctx.fillText("Waiting for weights…", pad, pad + 18);
+    } else {
+      const w1 = snap.w1, w2 = snap.w2, w3 = snap.w3;
+
+      for (let j = 0; j < h1N; j++) {
+        const hj = h1Idx[j];
+        for (let i = 0; i < inN; i++) {
+          const fi = inIdx[i];
+          drawEdge(inPos[i], h1Pos[j], w1[hj * nFeat + fi], i * 0.6 + j * 0.2);
+        }
+      }
+      for (let k = 0; k < h2N; k++) {
+        const hk = h2Idx[k];
+        for (let j = 0; j < h1N; j++) {
+          const hj = h1Idx[j];
+          drawEdge(h1Pos[j], h2Pos[k], w2[hk * h1Size + hj], j * 0.35 + k * 0.3 + 1.1);
+        }
+      }
+      for (let k = 0; k < h2N; k++) {
+        const hk = h2Idx[k];
+        drawEdge(h2Pos[k], outPos[0], w3[hk], k * 0.55 + 2.2);
+      }
+    }
+
+    const drawNode = (p, r, fill, stroke, phase) => {
+      const pulse = 1 + 0.07 * Math.sin(t * 2.1 + phase);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r * pulse, 0, Math.PI * 2);
+      ctx.fillStyle = fill;
+      ctx.shadowColor = stroke;
+      ctx.shadowBlur = 16;
+      ctx.fill();
+      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = stroke;
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    for (let i = 0; i < inPos.length; i++)
+      drawNode(inPos[i], 7, "rgba(56,189,248,0.10)", "rgba(56,189,248,0.95)", i * 0.4);
+    for (let j = 0; j < h1Pos.length; j++)
+      drawNode(h1Pos[j], 7, "rgba(34,197,94,0.10)", "rgba(34,197,94,0.95)", j * 0.3 + 0.9);
+    for (let k = 0; k < h2Pos.length; k++)
+      drawNode(h2Pos[k], 8, "rgba(34,197,94,0.12)", "rgba(34,197,94,0.98)", k * 0.32 + 1.8);
+    drawNode(outPos[0], 10, "rgba(56,189,248,0.14)", "rgba(56,189,248,0.98)", 2.8);
+
+    ctx.fillStyle = "rgba(154,164,178,0.95)";
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.fillText("Inputs", xIn - 18, pad + 12);
+    ctx.fillText("Hidden 1", xH1 - 26, pad + 12);
+    ctx.fillText("Hidden 2", xH2 - 26, pad + 12);
+    ctx.fillText("p(shoot)", xOut - 24, pad + 12);
+
+    if (snap?.iter != null && snap?.maxIter) {
+      const prog = clamp01(snap.iter / snap.maxIter);
+      const barW = W - pad * 2;
+      const barY = H - pad - 10;
+      ctx.fillStyle = "rgba(255,255,255,0.06)";
+      ctx.fillRect(pad, barY, barW, 6);
+      const grad = ctx.createLinearGradient(pad, 0, pad + barW, 0);
+      grad.addColorStop(0, "rgba(56,189,248,0.85)");
+      grad.addColorStop(1, "rgba(34,197,94,0.85)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(pad, barY, barW * prog, 6);
+    }
+  }
+}
+
+function maxAbsF32(arr) {
+  let m = 0;
+  for (let i = 0; i < arr.length; i++) {
+    const a = Math.abs(arr[i]);
+    if (a > m) m = a;
+  }
+  return m;
+}
+
+function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+
+function renderHeatmap(weights, rows, cols, scale) {
+  const c = document.createElement("canvas");
+  c.width = cols;
+  c.height = rows;
+  const ctx = c.getContext("2d");
+  const img = ctx.createImageData(cols, rows);
+  const data = img.data;
+  for (let r = 0; r < rows; r++) {
+    for (let col = 0; col < cols; col++) {
+      const v = weights[r * cols + col] * scale;
+      const t = Math.tanh(v * 2.2); // [-1,1] with some contrast
+      const a = 0.18 + 0.82 * Math.abs(t);
+      const idx = (r * cols + col) * 4;
+      if (t >= 0) {
+        // green
+        data[idx] = 34;
+        data[idx + 1] = 197;
+        data[idx + 2] = 94;
+      } else {
+        // blue
+        data[idx] = 56;
+        data[idx + 1] = 189;
+        data[idx + 2] = 248;
+      }
+      data[idx + 3] = Math.floor(255 * a);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+function drawHeatBlock(ctx, xLabel, yLabel, title, heatCanvas, x, y, w, h) {
+  ctx.font = "12px system-ui, sans-serif";
+  ctx.fillStyle = "#9aa4b2";
+  ctx.fillText(title, xLabel, yLabel + 4);
+
+  ctx.fillStyle = "rgba(255,255,255,0.05)";
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = "rgba(255,255,255,0.10)";
+  ctx.strokeRect(x, y, w, h);
+
+  if (heatCanvas) {
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalAlpha = 0.95;
+    ctx.drawImage(heatCanvas, x + 1, y + 1, w - 2, h - 2);
+    ctx.globalAlpha = 1;
+
+    // subtle scanline shimmer
+    const t = performance.now() / 1000;
+    const scanY = y + ((Math.sin(t * 1.1) * 0.5 + 0.5) * (h - 10));
+    const g = ctx.createLinearGradient(x, scanY, x, scanY + 18);
+    g.addColorStop(0, "rgba(255,255,255,0)");
+    g.addColorStop(0.5, "rgba(255,255,255,0.06)");
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(x + 1, scanY, w - 2, 18);
+  } else {
+    ctx.fillStyle = "rgba(154,164,178,0.85)";
+    ctx.font = "13px system-ui, sans-serif";
+    ctx.fillText("waiting for weights…", x + 12, y + 22);
+  }
+}
+
+const mlpViz = new MlpViz(nnVizCanvasEl, nnVizSubtitleEl);
+
+function setTrainingViz(on) {
+  if (on) mlpViz.show();
+  else mlpViz.hide();
+}
 
 function log(msg) {
   logEl.textContent += msg + "\n";
@@ -358,6 +654,139 @@ function drawShotPlot(canvas, shot) {
 
 // ── Results display ─────────────────────────────────────────────────────────
 
+function fmtPct(x) { return `${(x * 100).toFixed(1)}%`; }
+
+function drawConfusionMatrix(canvas, cm) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = 520, H = 240;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.classList.add("cmCanvas");
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+
+  ctx.fillStyle = "#0b0e14";
+  ctx.fillRect(0, 0, W, H);
+
+  const pad = 18;
+  const gridX0 = pad + 70;
+  const gridY0 = pad + 30;
+  const cellW = 170;
+  const cellH = 80;
+
+  const tn = cm.tn ?? 0, fp = cm.fp ?? 0, fn = cm.fn ?? 0, tp = cm.tp ?? 0;
+  const vals = [tn, fp, fn, tp];
+  const vmax = Math.max(1, ...vals);
+
+  function cellColor(v) {
+    const a = Math.min(1, v / vmax);
+    return `rgba(56,189,248,${0.12 + 0.55 * a})`;
+  }
+
+  // Labels
+  ctx.fillStyle = "#9aa4b2";
+  ctx.font = "12px system-ui, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText("Confusion matrix (test)", pad, pad + 4);
+
+  ctx.font = "11px system-ui, sans-serif";
+  ctx.fillText("Pred 0", gridX0 + 10, gridY0 - 10);
+  ctx.fillText("Pred 1", gridX0 + cellW + 10, gridY0 - 10);
+  ctx.save();
+  ctx.translate(gridX0 - 40, gridY0 + cellH);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText("True 0", 0, 0);
+  ctx.restore();
+  ctx.save();
+  ctx.translate(gridX0 - 40, gridY0 + cellH + cellH);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText("True 1", 0, 0);
+  ctx.restore();
+
+  // Cells: [ [tn, fp], [fn, tp] ]
+  const cells = [
+    { x: gridX0, y: gridY0, v: tn, label: "TN" },
+    { x: gridX0 + cellW, y: gridY0, v: fp, label: "FP" },
+    { x: gridX0, y: gridY0 + cellH, v: fn, label: "FN" },
+    { x: gridX0 + cellW, y: gridY0 + cellH, v: tp, label: "TP" },
+  ];
+  ctx.textAlign = "left";
+  for (const c of cells) {
+    ctx.fillStyle = cellColor(c.v);
+    ctx.fillRect(c.x, c.y, cellW - 10, cellH - 10);
+    ctx.strokeStyle = "rgba(255,255,255,0.10)";
+    ctx.strokeRect(c.x, c.y, cellW - 10, cellH - 10);
+    ctx.fillStyle = "rgba(229,231,235,0.95)";
+    ctx.font = "bold 18px system-ui, sans-serif";
+    ctx.fillText(String(c.v), c.x + 12, c.y + 34);
+    ctx.fillStyle = "#9aa4b2";
+    ctx.font = "11px system-ui, sans-serif";
+    ctx.fillText(c.label, c.x + 12, c.y + 56);
+  }
+}
+
+function renderMetrics(metrics) {
+  metricsEl.replaceChildren();
+  if (!metrics?.lr || !metrics?.mlp) {
+    const div = document.createElement("div");
+    div.className = "muted";
+    div.textContent = "Not enough data to compute a reliable held-out metric check yet. Record a longer session with more shots and more non-shooting aiming (negatives).";
+    metricsEl.appendChild(div);
+    return;
+  }
+
+  const mkCard = (title, subtitle, m) => {
+    const card = document.createElement("div");
+    card.className = "metricCard";
+
+    const head = document.createElement("div");
+    head.className = "metricHead";
+    const t = document.createElement("div");
+    t.className = "metricTitle";
+    t.textContent = title;
+    const sub = document.createElement("div");
+    sub.className = "metricSub";
+    sub.textContent = subtitle;
+    head.appendChild(t);
+    head.appendChild(sub);
+    card.appendChild(head);
+
+    const row = document.createElement("div");
+    row.className = "metricRow";
+    const pills = [
+      `Precision ${fmtPct(m.precision)}`,
+      `Recall ${fmtPct(m.recall)}`,
+      `F1 ${fmtPct(m.f1)}`,
+      `Acc ${fmtPct(m.acc)}`,
+      `Thr ${(m.threshold ?? 0.5).toFixed(2)} (best ${(m.bestThreshold ?? 0.5).toFixed(2)})`,
+    ];
+    for (const txt of pills) {
+      const p = document.createElement("span");
+      p.className = "metricPill";
+      p.textContent = txt;
+      row.appendChild(p);
+    }
+    card.appendChild(row);
+
+    const canvas = document.createElement("canvas");
+    drawConfusionMatrix(canvas, m.cm ?? { tp: 0, tn: 0, fp: 0, fn: 0 });
+    card.appendChild(canvas);
+
+    return card;
+  };
+
+  metricsEl.appendChild(mkCard("LR", "18 features · fast & stable", metrics.lr));
+  metricsEl.appendChild(mkCard("MLP", "30 features · more expressive", metrics.mlp));
+
+  const help = document.createElement("div");
+  help.className = "callout";
+  const b = document.createElement("b");
+  b.textContent = "How to tell it's good:";
+  help.appendChild(b);
+  help.appendChild(document.createElement("br"));
+  help.appendChild(document.createTextNode("You want high precision (few false spin-ups) and high recall (early spin-ups before real shots). If either model looks bad, record longer with more non-shooting aiming/movement (negatives)."));
+  metricsEl.appendChild(help);
+}
+
 function showResults(result) {
   resultsEl.classList.remove("hidden");
   const s = result.summary;
@@ -375,14 +804,17 @@ function showResults(result) {
     summaryEl.appendChild(div);
   }
 
+  renderMetrics(result.metrics);
+
   shotGridEl.replaceChildren();
-  if (result.shotPlots.length === 0) {
+  const shots = (result.shotPlots ?? []).slice(0, 2);
+  if (shots.length === 0) {
     const empty = document.createElement("div");
     empty.className = "muted";
-    empty.textContent = "No shots had strong enough predictions to display. The model may need more training data.";
+    empty.textContent = "No good shots found to display (no clear low→high prediction). Record a longer session with more shots and more non-shooting aiming.";
     shotGridEl.appendChild(empty);
   }
-  for (const shot of result.shotPlots) {
+  for (const shot of shots) {
     const div = document.createElement("div"); div.className = "shot";
     const canvas = document.createElement("canvas");
     div.appendChild(canvas); shotGridEl.appendChild(div);
@@ -424,7 +856,24 @@ btnReady.addEventListener("click", async () => {
 
     status[2] = "run"; renderSteps(2, status);
     await sleep(50); // yield to UI
-    const result = trainPipeline(logBytes, log);
+    setTrainingViz(true);
+    await sleep(30); // allow overlay to paint before heavy work
+    mlpViz.setSubtitle("Preparing dataset…");
+    const trainStart = performance.now();
+    const result = await trainPipeline(logBytes, log, {
+      onMlpSnapshot: (snap) => {
+        // snap contains (iter/maxIter + weights)
+        mlpViz.updateSnapshot(snap);
+      },
+      // Make the experience visible even on fast machines.
+      mlpSnapshotEvery: 8,
+      mlpDelayMs: 18,
+      mlpMaxIter: 700,
+    });
+    const minVizMs = 5200;
+    const elapsed = performance.now() - trainStart;
+    if (elapsed < minVizMs) await sleep(minVizMs - elapsed);
+    setTrainingViz(false);
     trainResult = result; status[2] = "ok";
 
     status[3] = "ok"; status[4] = "ok";
@@ -434,8 +883,11 @@ btnReady.addEventListener("click", async () => {
     showResults(result);
     btnLoadModel.disabled = false; btnDownloadModels.disabled = false;
     btnDownloadLog.disabled = false; btnReady.disabled = false;
+    resultsEl.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) {
-    setSpinner(false); log("ERROR: " + (e?.message ?? String(e)));
+    setSpinner(false);
+    setTrainingViz(false);
+    log("ERROR: " + (e?.message ?? String(e)));
     const idx = Object.keys(status).length ? Math.max(...Object.keys(status).map((x) => parseInt(x, 10))) : 0;
     status[idx] = "err"; renderSteps(idx, status); btnReady.disabled = false;
   }

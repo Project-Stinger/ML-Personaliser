@@ -82,25 +82,52 @@
         <h2>Results</h2>
         <div id="summary" class="summary"></div>
 
-        <h3>Shot examples (LR vs MLP)</h3>
+        <div class="row">
+          <button id="btnLoadModel" class="primary" disabled>All good, load my custom model</button>
+          <button id="btnDownloadModels" class="ghost" disabled>Download model files</button>
+        </div>
+        <div id="after" class="afterInline hidden">
+          <div class="afterTextWrap">
+            <div id="afterText" class="afterText"></div>
+          </div>
+          <div class="row">
+            <button id="btnDone" class="primary">Disconnect &amp; go play</button>
+          </div>
+        </div>
+        <p class="sub">
+          Next step: load your personalized weights to the blaster. This does <b>not</b> reflash firmware — it uploads only the model.
+        </p>
+
+        <h3>Quality check</h3>
+        <p class="sub">
+          These quick metrics are computed on a held-out split of <i>your</i> recording session.
+          If precision is low → too many false positives. If recall is low → it misses shots / predicts late.
+        </p>
+        <div id="metrics" class="metricsGrid"></div>
+
+        <h3>2 good shot examples (LR vs MLP)</h3>
         <p class="sub">
           Top plot: probability output of both models. Bottom plot: the 6 IMU axes. Red line is trigger. Gray band is the
           "prediction window" (100–600ms before trigger).
         </p>
         <div id="shotGrid" class="grid"></div>
 
-        <div class="row">
-          <button id="btnLoadModel" class="primary" disabled>All good, load my custom model</button>
-          <button id="btnDownloadModels" class="ghost" disabled>Download model files</button>
-        </div>
-        <div id="after" class="callout hidden">
-          <span id="afterText"></span>
-          <div class="row">
-            <button id="btnDone" class="primary">Disconnect &amp; go play</button>
-          </div>
-        </div>
       </section>
     </main>
+
+    <div id="nnViz" class="nnViz hidden" aria-hidden="true">
+      <div class="nnVizPanel">
+        <div class="nnVizHeader">
+          <div class="nnVizTitle">Training neural net</div>
+          <div id="nnVizSubtitle" class="nnVizSub">Initializing…</div>
+        </div>
+        <canvas id="nnVizCanvas"></canvas>
+        <div class="nnVizHint">
+          Green = positive weights, Blue = negative weights, Brightness = |weight|.
+          Tip: include “negatives” (aim/move without firing) to reduce false positives.
+        </div>
+      </div>
+    </div>
 
     <script type="module" src="app.js"></script>
   </body>

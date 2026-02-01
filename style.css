@@ -269,6 +269,28 @@ button:disabled {
   color: var(--muted);
 }
 
+.afterInline {
+  margin-top: 12px;
+  border: 1px solid rgba(34, 197, 94, 0.22);
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.10), rgba(56, 189, 248, 0.06));
+  padding: 12px 12px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.afterTextWrap {
+  flex: 1 1 420px;
+  min-width: 240px;
+}
+.afterText {
+  color: rgba(229, 231, 235, 0.92);
+  line-height: 1.45;
+  font-size: 13px;
+}
+
 .steps {
   display: grid;
   gap: 8px;
@@ -321,7 +343,73 @@ button:disabled {
 }
 
 .hidden {
-  display: none;
+  display: none !important;
+}
+
+.nnViz {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background:
+    radial-gradient(800px 500px at 20% 20%, rgba(56, 189, 248, 0.18), transparent 60%),
+    radial-gradient(900px 520px at 80% 30%, rgba(34, 197, 94, 0.14), transparent 60%),
+    rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(6px);
+}
+.nnVizPanel {
+  width: min(980px, 96vw);
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(11, 14, 20, 0.92);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+  padding: 14px 14px 12px;
+  position: relative;
+  overflow: hidden;
+}
+.nnVizPanel::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  background: radial-gradient(420px 220px at 20% 20%, rgba(56, 189, 248, 0.20), transparent 65%),
+    radial-gradient(420px 220px at 80% 50%, rgba(34, 197, 94, 0.16), transparent 65%);
+  pointer-events: none;
+  opacity: 0.9;
+  filter: blur(8px);
+}
+.nnVizHeader {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.nnVizTitle {
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+.nnVizSub {
+  color: var(--muted);
+  font-size: 13px;
+}
+.nnVizHint {
+  position: relative;
+  margin-top: 10px;
+  color: rgba(154, 164, 178, 0.95);
+  font-size: 12px;
+}
+#nnVizCanvas {
+  position: relative;
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.20);
 }
 
 .log {
@@ -346,6 +434,62 @@ button:disabled {
   .grid {
     grid-template-columns: 1fr;
   }
+}
+
+.metricsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+@media (max-width: 860px) {
+  .metricsGrid {
+    grid-template-columns: 1fr;
+  }
+}
+.metricCard {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.22);
+  padding: 12px;
+}
+.metricHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.metricTitle {
+  font-weight: 700;
+  color: var(--text);
+}
+.metricSub {
+  color: var(--muted);
+  font-size: 12px;
+}
+.metricRow {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.metricPill {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.cmCanvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  margin-top: 10px;
+  border-radius: 10px;
 }
 
 .shot {

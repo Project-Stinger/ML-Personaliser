@@ -443,6 +443,140 @@ export function trainMLP(F, y, nRows, nFeat, {
   return { w1, b1, w2, b2, w3, b3 };
 }
 
+// Like trainMLP(), but yields to the browser and emits snapshots for UI animation.
+export async function trainMLPInteractive(F, y, nRows, nFeat, {
+  h1Size = 64, h2Size = 32, maxIter = 600, alpha = 1e-4, learningRate = 0.001, seed = 42,
+  snapshotEvery = 16, delayMs = 6,
+} = {}, onSnapshot = null) {
+  const rng = makeRng(seed);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  let w1 = heInit(h1Size, nFeat, rng);
+  let b1 = new Float32Array(h1Size);
+  let w2 = heInit(h2Size, h1Size, rng);
+  let b2 = new Float32Array(h2Size);
+  let w3 = heInit(1, h2Size, rng);
+  let b3 = 0;
+
+  const adamState = (len) => ({ m: new Float32Array(len), v: new Float32Array(len) });
+  const s_w1 = adamState(w1.length), s_b1 = adamState(b1.length);
+  const s_w2 = adamState(w2.length), s_b2 = adamState(b2.length);
+  const s_w3 = adamState(w3.length);
+  let s_b3_m = 0, s_b3_v = 0;
+
+  const beta1 = 0.9, beta2 = 0.999, eps = 1e-8;
+
+  function adamUpdate(param, grad, state, t) {
+    for (let i = 0; i < param.length; i++) {
+      state.m[i] = beta1 * state.m[i] + (1 - beta1) * grad[i];
+      state.v[i] = beta2 * state.v[i] + (1 - beta2) * grad[i] * grad[i];
+      const mHat = state.m[i] / (1 - Math.pow(beta1, t));
+      const vHat = state.v[i] / (1 - Math.pow(beta2, t));
+      param[i] -= learningRate * mHat / (Math.sqrt(vHat) + eps);
+    }
+  }
+
+  const snap = (iter) => {
+    if (!onSnapshot) return;
+    try {
+      onSnapshot({
+        iter, maxIter,
+        nFeat, h1Size, h2Size,
+        w1: w1.slice(), w2: w2.slice(), w3: w3.slice(),
+      });
+    } catch {}
+  };
+  snap(0);
+  await sleep(0);
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    const t = iter + 1;
+    const gw1 = new Float32Array(w1.length);
+    const gb1 = new Float32Array(h1Size);
+    const gw2 = new Float32Array(w2.length);
+    const gb2 = new Float32Array(h2Size);
+    const gw3 = new Float32Array(w3.length);
+    let gb3 = 0;
+
+    for (let s = 0; s < nRows; s++) {
+      const x = F.subarray(s * nFeat, s * nFeat + nFeat);
+
+      const h1 = new Float32Array(h1Size);
+      for (let j = 0; j < h1Size; j++) {
+        let sum = b1[j];
+        const wOff = j * nFeat;
+        for (let k = 0; k < nFeat; k++) sum += w1[wOff + k] * x[k];
+        h1[j] = sum > 0 ? sum : 0;
+      }
+
+      const h2 = new Float32Array(h2Size);
+      for (let j = 0; j < h2Size; j++) {
+        let sum = b2[j];
+        const wOff = j * h1Size;
+        for (let k = 0; k < h1Size; k++) sum += w2[wOff + k] * h1[k];
+        h2[j] = sum > 0 ? sum : 0;
+      }
+
+      let z = b3;
+      for (let k = 0; k < h2Size; k++) z += w3[k] * h2[k];
+      const p = sigmoid(z);
+
+      const dz = p - y[s];
+      for (let k = 0; k < h2Size; k++) gw3[k] += dz * h2[k];
+      gb3 += dz;
+
+      const dh2 = new Float32Array(h2Size);
+      for (let j = 0; j < h2Size; j++) dh2[j] = dz * w3[j] * (h2[j] > 0 ? 1 : 0);
+      for (let j = 0; j < h2Size; j++) {
+        const wOff = j * h1Size;
+        for (let k = 0; k < h1Size; k++) gw2[wOff + k] += dh2[j] * h1[k];
+        gb2[j] += dh2[j];
+      }
+
+      const dh1 = new Float32Array(h1Size);
+      for (let j = 0; j < h1Size; j++) {
+        let sum = 0;
+        for (let k = 0; k < h2Size; k++) sum += dh2[k] * w2[k * h1Size + j];
+        dh1[j] = sum * (h1[j] > 0 ? 1 : 0);
+      }
+      for (let j = 0; j < h1Size; j++) {
+        const wOff = j * nFeat;
+        for (let k = 0; k < nFeat; k++) gw1[wOff + k] += dh1[j] * x[k];
+        gb1[j] += dh1[j];
+      }
+    }
+
+    const invN = 1 / nRows;
+    for (let i = 0; i < gw1.length; i++) gw1[i] = gw1[i] * invN + alpha * w1[i];
+    for (let i = 0; i < gb1.length; i++) gb1[i] *= invN;
+    for (let i = 0; i < gw2.length; i++) gw2[i] = gw2[i] * invN + alpha * w2[i];
+    for (let i = 0; i < gb2.length; i++) gb2[i] *= invN;
+    for (let i = 0; i < gw3.length; i++) gw3[i] = gw3[i] * invN + alpha * w3[i];
+    gb3 = gb3 * invN;
+
+    adamUpdate(w1, gw1, s_w1, t);
+    adamUpdate(b1, gb1, s_b1, t);
+    adamUpdate(w2, gw2, s_w2, t);
+    adamUpdate(b2, gb2, s_b2, t);
+    adamUpdate(w3, gw3, s_w3, t);
+    s_b3_m = beta1 * s_b3_m + (1 - beta1) * gb3;
+    s_b3_v = beta2 * s_b3_v + (1 - beta2) * gb3 * gb3;
+    const mHat3 = s_b3_m / (1 - Math.pow(beta1, t));
+    const vHat3 = s_b3_v / (1 - Math.pow(beta2, t));
+    b3 -= learningRate * mHat3 / (Math.sqrt(vHat3) + eps);
+
+    if ((iter + 1) % snapshotEvery === 0 || iter === maxIter - 1) {
+      snap(iter + 1);
+      await sleep(delayMs);
+    } else if ((iter + 1) % 64 === 0) {
+      await sleep(0);
+    }
+  }
+
+  snap(maxIter);
+  return { w1, b1, w2, b2, w3, b3 };
+}
+
 // ── CRC32 (IEEE, matches zlib.crc32) ────────────────────────────────────────
 
 export function crc32(u8) {
@@ -544,7 +678,13 @@ export function predictMLPSingle(feat, scalerMean, scalerScale, w1, b1, w2, b2, 
 
 // ── Full training pipeline ──────────────────────────────────────────────────
 
-export function trainPipeline(logBytes, onLog = () => {}) {
+export async function trainPipeline(logBytes, onLog = () => {}, opts = {}) {
+  const {
+    onMlpSnapshot = null,
+    mlpSnapshotEvery = 16,
+    mlpDelayMs = 6,
+    mlpMaxIter = 600,
+  } = opts;
   onLog("Parsing binary log...");
   const data = parseBinaryLog(logBytes);
   onLog(`Parsed ${data.n} samples (${(data.n / 100).toFixed(1)}s at 100Hz)`);
@@ -564,23 +704,35 @@ export function trainPipeline(logBytes, onLog = () => {}) {
   if (ds.posCount === 0 || ds.negCount === 0)
     throw new Error("Not enough training data. Need both positive and negative windows.");
 
-  onLog("Featurizing (summary) for LR...");
-  const { F: F_lr, nFeat: nfLR } = featurizeSummary(ds.X, ds.totalWindows, ds.windowSamples, ds.channels);
-  const scalerLR = fitScaler(F_lr, ds.totalWindows, nfLR);
-  const F_lr_s = applyScaler(F_lr, ds.totalWindows, nfLR, scalerLR.mean, scalerLR.scale);
+  // Featurize once (unscaled), then:
+  // 1) compute quick held-out metrics (train/test split)
+  // 2) train final models on ALL data for export/upload
+  onLog("Featurizing...");
+  const { F: F_lr_raw, nFeat: nfLR } = featurizeSummary(ds.X, ds.totalWindows, ds.windowSamples, ds.channels);
+  const { F: F_mlp_raw, nFeat: nfMLP } = featurizeRich(ds.X, ds.totalWindows, ds.windowSamples, ds.channels);
 
-  onLog("Training LogReg...");
+  onLog("Evaluating (held-out split)...");
+  const metrics = evalHeldOut(F_lr_raw, nfLR, F_mlp_raw, nfMLP, ds.y, ds.totalWindows, 0.25, 1337);
+  if (!metrics) {
+    onLog("NOTE: Not enough data for a reliable held-out metrics split (record more shots + negatives).");
+  } else {
+    onLog(`LR metrics (test): P=${(metrics.lr.precision * 100).toFixed(1)} R=${(metrics.lr.recall * 100).toFixed(1)} F1=${(metrics.lr.f1 * 100).toFixed(1)}`);
+    onLog(`MLP metrics (test): P=${(metrics.mlp.precision * 100).toFixed(1)} R=${(metrics.mlp.recall * 100).toFixed(1)} F1=${(metrics.mlp.f1 * 100).toFixed(1)}`);
+  }
+
+  onLog("Training LogReg (final, all data)...");
+  const scalerLR = fitScaler(F_lr_raw, ds.totalWindows, nfLR);
+  const F_lr_s = applyScaler(F_lr_raw, ds.totalWindows, nfLR, scalerLR.mean, scalerLR.scale);
   const lr = trainLogReg(F_lr_s, ds.y, ds.totalWindows, nfLR);
-  onLog(`LR done: intercept=${lr.intercept.toFixed(4)}, coef[0]=${lr.coef[0].toFixed(4)}`);
 
-  onLog("Featurizing (rich) for MLP...");
-  const { F: F_mlp, nFeat: nfMLP } = featurizeRich(ds.X, ds.totalWindows, ds.windowSamples, ds.channels);
-  const scalerMLP = fitScaler(F_mlp, ds.totalWindows, nfMLP);
-  const F_mlp_s = applyScaler(F_mlp, ds.totalWindows, nfMLP, scalerMLP.mean, scalerMLP.scale);
-
-  onLog("Training MLP (64->32->1)...");
-  const mlp = trainMLP(F_mlp_s, ds.y, ds.totalWindows, nfMLP);
-  onLog(`MLP done: b3=${mlp.b3.toFixed(4)}, w1[0]=${mlp.w1[0].toFixed(4)}`);
+  onLog("Training MLP (final, all data)...");
+  const scalerMLP = fitScaler(F_mlp_raw, ds.totalWindows, nfMLP);
+  const F_mlp_s = applyScaler(F_mlp_raw, ds.totalWindows, nfMLP, scalerMLP.mean, scalerMLP.scale);
+  const mlp = await trainMLPInteractive(
+    F_mlp_s, ds.y, ds.totalWindows, nfMLP,
+    { maxIter: mlpMaxIter, snapshotEvery: mlpSnapshotEvery, delayMs: mlpDelayMs },
+    onMlpSnapshot,
+  );
 
   onLog("Building MLMD binaries...");
   const lrBlob = buildMlmdLR(ds.windowSamples, scalerLR.mean, scalerLR.scale, lr.coef, lr.intercept);
@@ -601,7 +753,142 @@ export function trainPipeline(logBytes, onLog = () => {}) {
     durationMs: data.n > 0 ? data.ts[data.n - 1] - data.ts[0] : 0,
     shotsAll: risingAll.length, shotsAccepted: accepted.length,
     posWindows: ds.posCount, negWindows: ds.negCount,
-  }, lrBlob, mlpBlob, shotPlots };
+  }, metrics, lrBlob, mlpBlob, shotPlots };
+}
+
+// ── Held-out metrics (quick self-check) ─────────────────────────────────────
+
+function stratifiedSplit(y, nRows, testSize, rng) {
+  const pos = [], neg = [];
+  for (let i = 0; i < nRows; i++) (y[i] ? pos : neg).push(i);
+  if (pos.length < 2 || neg.length < 2) return null;
+  shuffle(pos, rng); shuffle(neg, rng);
+  let tp = Math.max(1, Math.round(pos.length * testSize));
+  let tn = Math.max(1, Math.round(neg.length * testSize));
+  tp = Math.min(tp, pos.length - 1);
+  tn = Math.min(tn, neg.length - 1);
+  const testIdx = pos.slice(0, tp).concat(neg.slice(0, tn));
+  const trainIdx = pos.slice(tp).concat(neg.slice(tn));
+  shuffle(testIdx, rng); shuffle(trainIdx, rng);
+  return { trainIdx, testIdx, posTest: tp, negTest: tn, posTrain: pos.length - tp, negTrain: neg.length - tn };
+}
+
+function gatherRows(F, idxs, nFeat) {
+  const out = new Float32Array(idxs.length * nFeat);
+  for (let r = 0; r < idxs.length; r++) {
+    const i = idxs[r];
+    out.set(F.subarray(i * nFeat, i * nFeat + nFeat), r * nFeat);
+  }
+  return out;
+}
+
+function gatherLabels(y, idxs) {
+  const out = new Uint8Array(idxs.length);
+  for (let i = 0; i < idxs.length; i++) out[i] = y[idxs[i]];
+  return out;
+}
+
+function predictLRScaledRow(Fs, row, nFeat, coef, intercept) {
+  let z = intercept;
+  const off = row * nFeat;
+  for (let j = 0; j < nFeat; j++) z += Fs[off + j] * coef[j];
+  return sigmoid(z);
+}
+
+function predictMLPScaledRow(Fs, row, nFeat, w1, b1, w2, b2, w3, b3Val, h1Size, h2Size) {
+  const xOff = row * nFeat;
+  const h1 = new Float32Array(h1Size);
+  for (let j = 0; j < h1Size; j++) {
+    let sum = b1[j];
+    const wOff = j * nFeat;
+    for (let k = 0; k < nFeat; k++) sum += w1[wOff + k] * Fs[xOff + k];
+    h1[j] = sum > 0 ? sum : 0;
+  }
+  const h2 = new Float32Array(h2Size);
+  for (let j = 0; j < h2Size; j++) {
+    let sum = b2[j];
+    const wOff = j * h1Size;
+    for (let k = 0; k < h1Size; k++) sum += w2[wOff + k] * h1[k];
+    h2[j] = sum > 0 ? sum : 0;
+  }
+  let z = b3Val;
+  for (let k = 0; k < h2Size; k++) z += w3[k] * h2[k];
+  return sigmoid(z);
+}
+
+function confusionFromProbs(yTrue, probs, thr) {
+  let tp = 0, tn = 0, fp = 0, fn = 0;
+  for (let i = 0; i < yTrue.length; i++) {
+    const pred = probs[i] >= thr ? 1 : 0;
+    const yt = yTrue[i] ? 1 : 0;
+    if (pred === 1 && yt === 1) tp++;
+    else if (pred === 1 && yt === 0) fp++;
+    else if (pred === 0 && yt === 1) fn++;
+    else tn++;
+  }
+  return { tp, tn, fp, fn };
+}
+
+function metricsFromCm(cm) {
+  const { tp, tn, fp, fn } = cm;
+  const precision = tp + fp > 0 ? tp / (tp + fp) : 0;
+  const recall = tp + fn > 0 ? tp / (tp + fn) : 0;
+  const f1 = precision + recall > 0 ? (2 * precision * recall) / (precision + recall) : 0;
+  const acc = (tp + tn) / Math.max(1, tp + tn + fp + fn);
+  return { precision, recall, f1, acc };
+}
+
+function bestF1Threshold(yTrue, probs) {
+  let bestThr = 0.5, bestF1 = -1;
+  for (let ti = 0; ti <= 100; ti++) {
+    const thr = ti / 100;
+    const cm = confusionFromProbs(yTrue, probs, thr);
+    const { f1 } = metricsFromCm(cm);
+    if (f1 > bestF1) { bestF1 = f1; bestThr = thr; }
+  }
+  return { bestThr, bestF1 };
+}
+
+function evalHeldOut(F_lr_raw, nfLR, F_mlp_raw, nfMLP, y, nRows, testSize, seed) {
+  const rng = makeRng(seed);
+  const split = stratifiedSplit(y, nRows, testSize, rng);
+  if (!split) return null;
+
+  const yTrain = gatherLabels(y, split.trainIdx);
+  const yTest = gatherLabels(y, split.testIdx);
+
+  // LR
+  const lrTrainRaw = gatherRows(F_lr_raw, split.trainIdx, nfLR);
+  const lrTestRaw = gatherRows(F_lr_raw, split.testIdx, nfLR);
+  const scalerLR = fitScaler(lrTrainRaw, split.trainIdx.length, nfLR);
+  const lrTrain = applyScaler(lrTrainRaw, split.trainIdx.length, nfLR, scalerLR.mean, scalerLR.scale);
+  const lrTest = applyScaler(lrTestRaw, split.testIdx.length, nfLR, scalerLR.mean, scalerLR.scale);
+  const lr = trainLogReg(lrTrain, yTrain, split.trainIdx.length, nfLR, { maxIter: 1500, lr: 1.0, l2: 1.0 });
+  const probsLR = new Float32Array(split.testIdx.length);
+  for (let i = 0; i < probsLR.length; i++) probsLR[i] = predictLRScaledRow(lrTest, i, nfLR, lr.coef, lr.intercept);
+  const cmLR = confusionFromProbs(yTest, probsLR, 0.5);
+  const mLR = metricsFromCm(cmLR);
+  const bestLR = bestF1Threshold(yTest, probsLR);
+
+  // MLP
+  const mlpTrainRaw = gatherRows(F_mlp_raw, split.trainIdx, nfMLP);
+  const mlpTestRaw = gatherRows(F_mlp_raw, split.testIdx, nfMLP);
+  const scalerMLP = fitScaler(mlpTrainRaw, split.trainIdx.length, nfMLP);
+  const mlpTrain = applyScaler(mlpTrainRaw, split.trainIdx.length, nfMLP, scalerMLP.mean, scalerMLP.scale);
+  const mlpTest = applyScaler(mlpTestRaw, split.testIdx.length, nfMLP, scalerMLP.mean, scalerMLP.scale);
+  const mlp = trainMLP(mlpTrain, yTrain, split.trainIdx.length, nfMLP, { maxIter: 220, learningRate: 0.001, alpha: 1e-4, seed: 42 });
+  const probsMLP = new Float32Array(split.testIdx.length);
+  for (let i = 0; i < probsMLP.length; i++)
+    probsMLP[i] = predictMLPScaledRow(mlpTest, i, nfMLP, mlp.w1, mlp.b1, mlp.w2, mlp.b2, mlp.w3, mlp.b3, 64, 32);
+  const cmMLP = confusionFromProbs(yTest, probsMLP, 0.5);
+  const mMLP = metricsFromCm(cmMLP);
+  const bestMLP = bestF1Threshold(yTest, probsMLP);
+
+  return {
+    split: { testSize, seed, ...split, testN: split.testIdx.length, trainN: split.trainIdx.length },
+    lr: { threshold: 0.5, cm: cmLR, ...mLR, bestThreshold: bestLR.bestThr, bestF1: bestLR.bestF1 },
+    mlp: { threshold: 0.5, cm: cmMLP, ...mMLP, bestThreshold: bestMLP.bestThr, bestF1: bestMLP.bestF1 },
+  };
 }
 
 // ── Per-shot plot data ──────────────────────────────────────────────────────
@@ -609,7 +896,7 @@ export function trainPipeline(logBytes, onLog = () => {}) {
 function computeShotPlots(data, accepted, windowSamples, leadSamples, scalerLR, lr, nfLR, scalerMLP, mlp, nfMLP) {
   const { ts, ax, ay, az, gx, gy, gz } = data;
   const n = data.n;
-  const maxShots = 10;
+  const maxShots = 2;
 
   const scored = [];
   for (const trigI of accepted) {
@@ -643,12 +930,33 @@ function computeShotPlots(data, accepted, windowSamples, leadSamples, scalerLR, 
         mlp.w1, mlp.b1, mlp.w2, mlp.b2, mlp.w3, mlp.b3, nfMLP, 64, 32));
     }
 
-    const score = Math.max(scoreSingle(xMs, probsLR), scoreSingle(xMs, probsMLP));
-    scored.push({ trigI, t0, xMs, probsLR, probsMLP, axW, ayW, azW, gxW, gyW, gzW, score });
+    const scoreLR = scoreSingle(xMs, probsLR);
+    const scoreMLP = scoreSingle(xMs, probsMLP);
+    const scoreBoth = Math.min(scoreLR, scoreMLP);
+    const scoreEither = Math.max(scoreLR, scoreMLP);
+    scored.push({ trigI, t0, xMs, probsLR, probsMLP, axW, ayW, azW, gxW, gyW, gzW, scoreLR, scoreMLP, scoreBoth, scoreEither });
   }
 
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, maxShots);
+  const byTrig = new Map();
+  function addUnique(list) {
+    for (const s of list) {
+      if (byTrig.has(s.trigI)) continue;
+      byTrig.set(s.trigI, s);
+      if (byTrig.size >= maxShots) break;
+    }
+  }
+
+  // Prefer examples where BOTH models show a clear low→high transition.
+  const bothGood = scored.filter((s) => s.scoreBoth > 0).sort((a, b) => b.scoreBoth - a.scoreBoth);
+  addUnique(bothGood);
+
+  // Fallback: if not enough, allow shots where at least one model is clear.
+  if (byTrig.size < maxShots) {
+    const eitherGood = scored.filter((s) => s.scoreEither > 0).sort((a, b) => b.scoreEither - a.scoreEither);
+    addUnique(eitherGood);
+  }
+
+  return Array.from(byTrig.values());
 }
 
 function scoreSingle(xMs, probs) {
