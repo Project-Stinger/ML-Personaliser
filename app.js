@@ -406,9 +406,14 @@ async function writeText(s) {
 async function readLine(timeoutMs = 5000) { return serialIO.readLine(timeoutMs); }
 
 async function resyncSerial(label = "Resyncing serial session...") {
-  log(label); serialIO.clear();
-  try { await writeText("\n"); } catch {}
-  await sleep(60);
+  // Important: do NOT write a bare newline here.
+  // Firmware intentionally only consumes serial bytes once it sees an 'M' prefix
+  // (to avoid interfering with other Serial consumers). Sending '\n' can get stuck
+  // at the head of the RX buffer and prevent all subsequent ML commands from being
+  // parsed, leading to timeouts.
+  log(label);
+  serialIO.clear();
+  await sleep(30);
   trace("serial", "resync: cleared buffers");
 }
 
@@ -440,6 +445,7 @@ async function pullLog() {
     let size = null;
     for (let i = 0; i < 40; i++) {
       const line = await readLine(4000); log("<< " + line);
+      if (line.includes("[ml] ERROR:")) throw new Error(line);
       if (line.startsWith("MLDUMP1 ")) {
         const n = parseInt(line.slice("MLDUMP1 ".length).trim(), 10);
         if (Number.isFinite(n) && n > 0) size = n; break;
