@@ -21,6 +21,11 @@ const afterEl = document.getElementById("after");
 const afterTextEl = document.getElementById("afterText");
 const btnDone = document.getElementById("btnDone");
 const btnResetFactory = document.getElementById("btnResetFactory");
+const dataQualityEl = document.getElementById("dataQuality");
+const lossCanvasEl = document.getElementById("lossCanvas");
+const btnImportLogs = document.getElementById("btnImportLogs");
+const fileInputEl = document.getElementById("fileInput");
+const importStatusEl = document.getElementById("importStatus");
 
 const STEPS = [
   "Connect to blaster",
@@ -793,14 +798,174 @@ function renderMetrics(metrics) {
   metricsEl.appendChild(help);
 }
 
+function renderDataQuality(result) {
+  dataQualityEl.replaceChildren();
+  const s = result.summary;
+  const recSec = s.durationMs / 1000;
+  const rawShots = s.rawPosCount ?? s.shotsAccepted;
+
+  // Score components (0-100 each)
+  const shotScore = Math.min(100, Math.round((rawShots / 100) * 100)); // 100 shots = 100%
+  const timeScore = Math.min(100, Math.round((recSec / 300) * 100)); // 5 min = 100%
+  const negRatio = s.negWindows / Math.max(1, s.posWindows);
+  const negScore = Math.min(100, Math.round(Math.min(negRatio, 1) * 100));
+  const overall = Math.round((shotScore + timeScore + negScore) / 3);
+
+  const tier = overall >= 70 ? "good" : overall >= 40 ? "fair" : "bad";
+  const label = overall >= 70 ? "Good" : overall >= 40 ? "Fair" : "Needs more data";
+
+  const wrap = document.createElement("div");
+  wrap.className = `dq-wrap dq-${tier}`;
+
+  const scoreDiv = document.createElement("div");
+  scoreDiv.className = "dq-score";
+  scoreDiv.textContent = overall;
+  wrap.appendChild(scoreDiv);
+
+  const details = document.createElement("div");
+  details.className = "dq-details";
+  const b = document.createElement("div");
+  b.className = "dq-label";
+  b.textContent = `Data quality: ${label}`;
+  details.appendChild(b);
+  const bars = [
+    { label: "Shots", score: shotScore, tip: `${rawShots} shots (aim for 100+)` },
+    { label: "Duration", score: timeScore, tip: `${recSec.toFixed(0)}s (aim for 5+ min)` },
+    { label: "Negatives", score: negScore, tip: `${negRatio.toFixed(1)}:1 neg/pos ratio (aim for 1:1+)` },
+  ];
+  for (const bar of bars) {
+    const row = document.createElement("div");
+    row.className = "dq-bar-row";
+    const lbl = document.createElement("span");
+    lbl.className = "dq-bar-label";
+    lbl.textContent = bar.label;
+    const track = document.createElement("div");
+    track.className = "dq-bar-track";
+    const fill = document.createElement("div");
+    const bt = bar.score >= 70 ? "good" : bar.score >= 40 ? "fair" : "bad";
+    fill.className = `dq-bar-fill dq-${bt}`;
+    fill.style.setProperty("--bar-pct", bar.score + "%");
+    track.appendChild(fill);
+    const tip = document.createElement("span");
+    tip.className = "dq-bar-tip";
+    tip.textContent = bar.tip;
+    row.appendChild(lbl); row.appendChild(track); row.appendChild(tip);
+    details.appendChild(row);
+  }
+  wrap.appendChild(details);
+  dataQualityEl.appendChild(wrap);
+}
+
+function drawLossCurve(lrLoss, mlpLoss, metrics) {
+  if (!lossCanvasEl) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = 600, H = 220;
+  lossCanvasEl.width = W * dpr; lossCanvasEl.height = H * dpr;
+  const ctx = lossCanvasEl.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.fillStyle = "#0b0e14"; ctx.fillRect(0, 0, W, H);
+
+  const pad = { l: 50, r: 16, t: 20, b: 28 };
+  const pW = W - pad.l - pad.r, pH = H - pad.t - pad.b;
+
+  // Combine all loss values to find range
+  const allPts = [...(lrLoss || []), ...(mlpLoss || [])];
+
+  // Also include train/val loss from held-out eval if available
+  const lrTL = metrics?.lr?.trainLoss, lrVL = metrics?.lr?.valLoss;
+  const mlpTL = metrics?.mlp?.trainLoss, mlpVL = metrics?.mlp?.valLoss;
+  const extraVals = [lrTL, lrVL, mlpTL, mlpVL].filter(v => v != null && Number.isFinite(v));
+
+  if (allPts.length < 2 && extraVals.length === 0) {
+    ctx.fillStyle = "#9aa4b2"; ctx.font = "13px system-ui"; ctx.fillText("Not enough data for loss curve", pad.l, H / 2);
+    return;
+  }
+
+  let maxIter = 0, maxLoss = 0, minLoss = Infinity;
+  for (const p of allPts) {
+    if (p.iter > maxIter) maxIter = p.iter;
+    if (p.loss > maxLoss) maxLoss = p.loss;
+    if (p.loss < minLoss) minLoss = p.loss;
+  }
+  for (const v of extraVals) {
+    if (v > maxLoss) maxLoss = v;
+    if (v < minLoss) minLoss = v;
+  }
+  const lPad = (maxLoss - minLoss) * 0.1 + 0.01;
+  minLoss = Math.max(0, minLoss - lPad); maxLoss += lPad;
+
+  const xScale = (iter) => pad.l + (maxIter > 0 ? (iter / maxIter) * pW : 0);
+  const yScale = (loss) => pad.t + pH - ((loss - minLoss) / (maxLoss - minLoss)) * pH;
+
+  // Grid
+  ctx.strokeStyle = "rgba(255,255,255,0.06)"; ctx.lineWidth = 0.5;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.t + (pH * i) / 4;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
+  }
+
+  // Y-axis labels
+  ctx.fillStyle = "#9aa4b2"; ctx.font = "9px system-ui"; ctx.textAlign = "right";
+  for (let i = 0; i <= 4; i++) {
+    const v = maxLoss - ((maxLoss - minLoss) * i) / 4;
+    ctx.fillText(v.toFixed(2), pad.l - 5, pad.t + (pH * i) / 4 + 3);
+  }
+
+  // Draw training loss curves
+  function drawCurve(pts, color) {
+    if (!pts || pts.length < 2) return;
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      const x = xScale(pts[i].iter), y = yScale(pts[i].loss);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  drawCurve(lrLoss, "#38bdf8");
+  drawCurve(mlpLoss, "#22c55e");
+
+  // Draw train/val loss markers from held-out eval (horizontal dashed lines at right edge)
+  function drawLossMarker(loss, color, label, yOff) {
+    if (loss == null || !Number.isFinite(loss)) return;
+    const y = yScale(loss);
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = color; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(W - pad.r - 120, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = color; ctx.font = "9px system-ui"; ctx.textAlign = "right";
+    ctx.fillText(label + " " + loss.toFixed(3), W - pad.r - 2, y + yOff);
+  }
+  drawLossMarker(lrTL, "#38bdf880", "LR train", -4);
+  drawLossMarker(lrVL, "#38bdf8", "LR val", 10);
+  drawLossMarker(mlpTL, "#22c55e80", "MLP train", -4);
+  drawLossMarker(mlpVL, "#22c55e", "MLP val", 10);
+
+  // Legend
+  ctx.fillStyle = "#38bdf8"; ctx.fillRect(pad.l + 8, pad.t + 4, 12, 3);
+  ctx.fillStyle = "#9aa4b2"; ctx.font = "10px system-ui"; ctx.textAlign = "left";
+  ctx.fillText("LR train", pad.l + 24, pad.t + 8);
+  ctx.fillStyle = "#22c55e"; ctx.fillRect(pad.l + 78, pad.t + 4, 12, 3);
+  ctx.fillStyle = "#9aa4b2"; ctx.fillText("MLP train", pad.l + 94, pad.t + 8);
+  ctx.fillStyle = "#9aa4b2"; ctx.fillText("dashed = held-out train/val", pad.l + 160, pad.t + 8);
+
+  // X-axis
+  ctx.fillStyle = "#9aa4b2"; ctx.font = "9px system-ui"; ctx.textAlign = "center";
+  ctx.fillText("Epoch", W / 2, H - 4);
+}
+
 function showResults(result) {
   resultsEl.classList.remove("hidden");
+  renderDataQuality(result);
+  drawLossCurve(result.lrLossHistory, result.mlpLossHistory, result.metrics);
   const s = result.summary;
   summaryEl.replaceChildren();
+  const trainSec = result.trainingMs != null ? (result.trainingMs / 1000).toFixed(1) : null;
   const rows = [
-    ["Duration:", `${(s.durationMs / 1000).toFixed(1)}s (${s.samples} samples)`],
+    ["Recording:", `${(s.durationMs / 1000).toFixed(1)}s (${s.samples} samples)`],
     ["Shots:", `${s.shotsAll} total, ${s.shotsAccepted} accepted`],
     ["Training windows:", `${s.posWindows} positive, ${s.negWindows} negative`],
+    ...(trainSec ? [["Trained in:", `${trainSec}s (LR + MLP, in-browser)`]] : []),
   ];
   for (const [k, v] of rows) {
     const div = document.createElement("div");
@@ -808,6 +973,13 @@ function showResults(result) {
     div.appendChild(b);
     div.appendChild(document.createTextNode(" " + v));
     summaryEl.appendChild(div);
+  }
+
+  if (result.warnings && result.warnings.length > 0) {
+    const warnDiv = document.createElement("div");
+    warnDiv.className = "dq-warning";
+    warnDiv.innerHTML = "<b>Heads up:</b> " + result.warnings.join(" ");
+    summaryEl.appendChild(warnDiv);
   }
 
   renderMetrics(result.metrics);
@@ -880,11 +1052,12 @@ btnReady.addEventListener("click", async () => {
     const elapsed = performance.now() - trainStart;
     if (elapsed < minVizMs) await sleep(minVizMs - elapsed);
     setTrainingViz(false);
+    result.trainingMs = elapsed;
     trainResult = result; status[2] = "ok";
 
     status[3] = "ok"; status[4] = "ok";
     renderSteps(4, status); setSpinner(false);
-    log("Training complete.");
+    log(`Training complete in ${(elapsed / 1000).toFixed(1)}s.`);
 
     showResults(result);
     btnLoadModel.disabled = false; btnDownloadModels.disabled = false;
@@ -957,6 +1130,94 @@ btnResetFactory.addEventListener("click", async () => {
     }
   } catch (e) { log("ERROR: " + (e?.message ?? String(e))); }
   finally { btnResetFactory.disabled = false; }
+});
+
+// ── Import .bin logs ────────────────────────────────────────────────────────
+
+btnImportLogs.addEventListener("click", () => { fileInputEl.click(); });
+
+fileInputEl.addEventListener("change", async (e) => {
+  const files = Array.from(e.target.files);
+  if (!files.length) return;
+  fileInputEl.value = ""; // reset so same files can be re-selected
+
+  logEl.textContent = "";
+  resultsEl.classList.add("hidden"); afterEl.classList.add("hidden");
+  btnLoadModel.disabled = true; btnDownloadModels.disabled = true; btnDownloadLog.disabled = true;
+  trainResult = null; rawLogBytes = null;
+
+  const status = {};
+  try {
+    setSpinner(true);
+    importStatusEl.textContent = `Loading ${files.length} file(s)...`;
+    log(`Importing ${files.length} .bin file(s)...`);
+
+    // Read and concatenate all files
+    const buffers = [];
+    let totalBytes = 0;
+    for (const f of files) {
+      const ab = await f.arrayBuffer();
+      const u8 = new Uint8Array(ab);
+      // Validate: must be a multiple of 17 bytes (MlSample size)
+      if (u8.length % 17 !== 0) {
+        log(`WARNING: ${f.name} size (${u8.length}) not a multiple of 17 bytes/sample — skipping`);
+        continue;
+      }
+      log(`Loaded ${f.name}: ${u8.length} bytes (${Math.floor(u8.length / 17)} samples)`);
+      buffers.push(u8);
+      totalBytes += u8.length;
+    }
+    if (!buffers.length) throw new Error("No valid .bin files loaded");
+
+    // Concatenate into one buffer
+    const combined = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const buf of buffers) {
+      combined.set(buf, offset);
+      offset += buf.length;
+    }
+    rawLogBytes = combined;
+    const totalSamples = Math.floor(totalBytes / 17);
+    log(`Combined: ${totalBytes} bytes, ${totalSamples} samples from ${buffers.length} file(s)`);
+    importStatusEl.textContent = `${totalSamples} samples loaded`;
+
+    status[0] = "ok"; status[1] = "ok";
+    status[2] = "run"; renderSteps(2, status);
+
+    await sleep(50);
+    setTrainingViz(true);
+    await sleep(30);
+    mlpViz.setSubtitle("Preparing dataset…");
+    const trainStart = performance.now();
+    const result = await trainPipeline(combined, log, {
+      onMlpSnapshot: (snap) => mlpViz.updateSnapshot(snap),
+      mlpSnapshotEvery: 8,
+      mlpDelayMs: 18,
+      mlpMaxIter: 700,
+    });
+    const minVizMs = 5200;
+    const elapsed = performance.now() - trainStart;
+    if (elapsed < minVizMs) await sleep(minVizMs - elapsed);
+    setTrainingViz(false);
+    result.trainingMs = elapsed;
+    trainResult = result;
+
+    status[2] = "ok"; status[3] = "ok"; status[4] = "ok";
+    renderSteps(4, status); setSpinner(false);
+    log(`Training complete in ${(elapsed / 1000).toFixed(1)}s.`);
+
+    showResults(result);
+    btnDownloadModels.disabled = false;
+    btnDownloadLog.disabled = false;
+    // Model upload only available if serial is connected
+    btnLoadModel.disabled = !serialIO;
+    resultsEl.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (err) {
+    setSpinner(false);
+    setTrainingViz(false);
+    log("ERROR: " + (err?.message ?? String(err)));
+    importStatusEl.textContent = "Error — see log";
+  }
 });
 
 // ── SerialIO class ──────────────────────────────────────────────────────────
