@@ -23,6 +23,7 @@ const btnDone = document.getElementById("btnDone");
 const btnResetFactory = document.getElementById("btnResetFactory");
 const dataQualityEl = document.getElementById("dataQuality");
 const lossCanvasEl = document.getElementById("lossCanvas");
+const btnPrintPlots = document.getElementById("btnPrintPlots");
 const btnImportLogs = document.getElementById("btnImportLogs");
 const fileInputEl = document.getElementById("fileInput");
 const importStatusEl = document.getElementById("importStatus");
@@ -544,108 +545,107 @@ async function queryModelInfo() {
 
 // ── Canvas plots ────────────────────────────────────────────────────────────
 
-function drawShotPlot(canvas, shot) {
-  const dpr = window.devicePixelRatio || 1;
-  const W = 540, H = 380;
+function drawShotPlot(canvas, shot, print = false) {
+  const dpr = print ? 3 : (window.devicePixelRatio || 1);
+  const W = print ? 1080 : 540, H = print ? 760 : 380;
   canvas.width = W * dpr; canvas.height = H * dpr;
-  canvas.style.width = "100%"; canvas.style.height = "auto";
-  canvas.style.aspectRatio = W + "/" + H;
+  if (!print) { canvas.style.width = "100%"; canvas.style.height = "auto"; canvas.style.aspectRatio = W + "/" + H; }
   const ctx = canvas.getContext("2d");
   ctx.scale(dpr, dpr);
 
-  const pad = { l: 44, r: 16, t: 28, mid: 18, b: 22 };
-  const topH = 120, botH = 150;
+  // Theme
+  const bg = print ? "#ffffff" : "#0b0e14";
+  const text = print ? "#333333" : "#9aa4b2";
+  const grid = print ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.06)";
+  const band = print ? "rgba(0,0,0,0.04)" : "rgba(255,255,255,0.04)";
+  const trig = print ? "rgba(220,40,40,0.7)" : "rgba(255,60,60,0.8)";
+  const lrCol = print ? "#0077cc" : "#38bdf8";
+  const mlpCol = print ? "#16853e" : "#22c55e";
+  const imuColors = print
+    ? ["#2563eb", "#16a34a", "#ea580c", "#dc2626", "#9333ea", "#78716c"]
+    : ["#60a5fa", "#4ade80", "#fb923c", "#f87171", "#c084fc", "#a1887f"];
+  const lw = print ? 3 : 1.5;
+  const fs = print ? 2 : 1; // font scale
+
+  const pad = { l: 44 * fs, r: 16 * fs, t: 28 * fs, mid: 18 * fs, b: 22 * fs };
+  const topH = 120 * fs, botH = 150 * fs;
   const plotW = W - pad.l - pad.r;
 
   const xMs = shot.xMs;
   const xMin = xMs[0], xMax = xMs[xMs.length - 1];
   const xScale = (x) => pad.l + (x - xMin) / (xMax - xMin) * plotW;
 
-  ctx.fillStyle = "#0b0e14"; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
 
   const predL = xScale(-600), predR = xScale(-100);
   const trigX = xScale(0);
 
-  // ── Section title: predictions ──
-  ctx.fillStyle = "#9aa4b2"; ctx.font = "bold 10px system-ui, sans-serif"; ctx.textAlign = "left";
-  ctx.fillText("p(shoot)", pad.l, pad.t - 10);
+  ctx.fillStyle = text; ctx.font = `bold ${10 * fs}px system-ui, sans-serif`; ctx.textAlign = "left";
+  ctx.fillText("p(shoot)", pad.l, pad.t - 10 * fs);
 
-  // Legend top-right
-  const legY = pad.t - 16;
-  ctx.fillStyle = "#38bdf8"; ctx.fillRect(W - pad.r - 68, legY, 10, 3);
-  ctx.font = "10px system-ui, sans-serif";
-  ctx.fillStyle = "#9aa4b2"; ctx.fillText("LR", W - pad.r - 54, legY + 4);
-  ctx.fillStyle = "#22c55e"; ctx.fillRect(W - pad.r - 30, legY, 10, 3);
-  ctx.fillStyle = "#9aa4b2"; ctx.fillText("MLP", W - pad.r - 16, legY + 4);
+  const legY = pad.t - 16 * fs;
+  ctx.fillStyle = lrCol; ctx.fillRect(W - pad.r - 68 * fs, legY, 10 * fs, 3 * fs);
+  ctx.font = `${10 * fs}px system-ui, sans-serif`;
+  ctx.fillStyle = text; ctx.fillText("LR", W - pad.r - 54 * fs, legY + 4 * fs);
+  ctx.fillStyle = mlpCol; ctx.fillRect(W - pad.r - 30 * fs, legY, 10 * fs, 3 * fs);
+  ctx.fillStyle = text; ctx.fillText("MLP", W - pad.r - 16 * fs, legY + 4 * fs);
 
-  // ── Top: predictions plot ──
   const topY0 = pad.t, topY1 = pad.t + topH;
-  ctx.fillStyle = "rgba(255,255,255,0.04)";
-  ctx.fillRect(predL, topY0, predR - predL, topH);
-
-  ctx.strokeStyle = "rgba(255,60,60,0.8)"; ctx.lineWidth = 1;
+  ctx.fillStyle = band; ctx.fillRect(predL, topY0, predR - predL, topH);
+  ctx.strokeStyle = trig; ctx.lineWidth = 1 * fs;
   ctx.beginPath(); ctx.moveTo(trigX, topY0); ctx.lineTo(trigX, topY1); ctx.stroke();
 
-  // Y-axis labels
-  ctx.fillStyle = "#9aa4b2"; ctx.font = "9px system-ui, sans-serif"; ctx.textAlign = "right";
-  ctx.fillText("1.0", pad.l - 5, topY0 + 8);
-  ctx.fillText("0.5", pad.l - 5, (topY0 + topY1) / 2 + 3);
-  ctx.fillText("0.0", pad.l - 5, topY1 + 1);
+  ctx.fillStyle = text; ctx.font = `${9 * fs}px system-ui, sans-serif`; ctx.textAlign = "right";
+  ctx.fillText("1.0", pad.l - 5 * fs, topY0 + 8 * fs);
+  ctx.fillText("0.5", pad.l - 5 * fs, (topY0 + topY1) / 2 + 3 * fs);
+  ctx.fillText("0.0", pad.l - 5 * fs, topY1 + 1 * fs);
 
-  // Grid lines
   const probYScale = (p) => topY1 - p * topH;
-  ctx.strokeStyle = "rgba(255,255,255,0.06)"; ctx.lineWidth = 0.5;
+  ctx.strokeStyle = grid; ctx.lineWidth = 0.5 * fs;
   for (const p of [0.25, 0.5, 0.75]) {
     const y = probYScale(p);
     ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
   }
 
-  // Probability lines
   function drawLine(data, color) {
-    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
+    ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.beginPath();
     for (let i = 0; i < data.length; i++) {
       const x = xScale(xMs[i]), y = probYScale(data[i]);
       i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
     }
     ctx.stroke();
   }
-  drawLine(shot.probsLR, "#38bdf8");
-  drawLine(shot.probsMLP, "#22c55e");
+  drawLine(shot.probsLR, lrCol);
+  drawLine(shot.probsMLP, mlpCol);
 
-  // ── Section title: IMU ──
   const botY0 = topY1 + pad.mid, botY1 = botY0 + botH;
-  ctx.fillStyle = "#9aa4b2"; ctx.font = "bold 10px system-ui, sans-serif"; ctx.textAlign = "left";
-  ctx.fillText("IMU (raw i16)", pad.l, botY0 - 6);
+  ctx.fillStyle = text; ctx.font = `bold ${10 * fs}px system-ui, sans-serif`; ctx.textAlign = "left";
+  ctx.fillText("IMU (raw i16)", pad.l, botY0 - 6 * fs);
 
-  // IMU legend top-right
-  const imuColors = ["#60a5fa", "#4ade80", "#fb923c", "#f87171", "#c084fc", "#a1887f"];
   const imuLabels = ["ax", "ay", "az", "gx", "gy", "gz"];
-  ctx.font = "9px system-ui, sans-serif";
+  ctx.font = `${9 * fs}px system-ui, sans-serif`;
   let legX = W - pad.r;
   for (let ch = 5; ch >= 0; ch--) {
     const tw = ctx.measureText(imuLabels[ch]).width;
     legX -= tw;
-    ctx.fillStyle = imuColors[ch]; ctx.fillText(imuLabels[ch], legX, botY0 - 6);
-    legX -= 12;
+    ctx.fillStyle = imuColors[ch]; ctx.fillText(imuLabels[ch], legX, botY0 - 6 * fs);
+    legX -= 12 * fs;
   }
 
-  // ── Bottom: IMU plot ──
-  ctx.fillStyle = "rgba(255,255,255,0.04)";
-  ctx.fillRect(predL, botY0, predR - predL, botH);
-
-  ctx.strokeStyle = "rgba(255,60,60,0.8)"; ctx.lineWidth = 1;
+  ctx.fillStyle = band; ctx.fillRect(predL, botY0, predR - predL, botH);
+  ctx.strokeStyle = trig; ctx.lineWidth = 1 * fs;
   ctx.beginPath(); ctx.moveTo(trigX, botY0); ctx.lineTo(trigX, botY1); ctx.stroke();
 
   let imuMin = Infinity, imuMax = -Infinity;
   for (const arr of [shot.axW, shot.ayW, shot.azW, shot.gxW, shot.gyW, shot.gzW])
     for (const v of arr) { if (v < imuMin) imuMin = v; if (v > imuMax) imuMax = v; }
-  const imuPad = (imuMax - imuMin) * 0.05 + 1;
-  imuMin -= imuPad; imuMax += imuPad;
+  const imuPad2 = (imuMax - imuMin) * 0.05 + 1;
+  imuMin -= imuPad2; imuMax += imuPad2;
   const imuYScale = (v) => botY1 - (v - imuMin) / (imuMax - imuMin) * botH;
 
   const imuData = [shot.axW, shot.ayW, shot.azW, shot.gxW, shot.gyW, shot.gzW];
   for (let ch = 0; ch < 6; ch++) {
-    ctx.strokeStyle = imuColors[ch]; ctx.lineWidth = 0.8; ctx.globalAlpha = 0.7; ctx.beginPath();
+    ctx.strokeStyle = imuColors[ch]; ctx.lineWidth = (print ? 1.5 : 0.8) * fs; ctx.globalAlpha = print ? 0.85 : 0.7; ctx.beginPath();
     for (let i = 0; i < imuData[ch].length; i++) {
       const x = xScale(xMs[i]), y = imuYScale(imuData[ch][i]);
       i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
@@ -654,12 +654,11 @@ function drawShotPlot(canvas, shot) {
   }
   ctx.globalAlpha = 1;
 
-  // ── Shared X-axis at bottom ──
-  ctx.fillStyle = "#9aa4b2"; ctx.font = "9px system-ui, sans-serif"; ctx.textAlign = "center";
+  ctx.fillStyle = text; ctx.font = `${9 * fs}px system-ui, sans-serif`; ctx.textAlign = "center";
   const step = 200;
   for (let ms = Math.ceil(xMin / step) * step; ms <= xMax; ms += step) {
     const x = xScale(ms);
-    ctx.fillText(ms + "ms", x, botY1 + 14);
+    ctx.fillText(ms + "ms", x, botY1 + 14 * fs);
   }
 }
 
@@ -1060,7 +1059,7 @@ btnReady.addEventListener("click", async () => {
     log(`Training complete in ${(elapsed / 1000).toFixed(1)}s.`);
 
     showResults(result);
-    btnLoadModel.disabled = false; btnDownloadModels.disabled = false;
+    btnLoadModel.disabled = false; btnDownloadModels.disabled = false; btnPrintPlots.disabled = false;
     btnDownloadLog.disabled = false; btnReady.disabled = false;
     resultsEl.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) {
@@ -1083,6 +1082,20 @@ btnDownloadModels.addEventListener("click", () => {
   if (!trainResult) return;
   downloadBlob("ml_model_lr.bin", trainResult.lrBlob);
   downloadBlob("ml_model_mlp.bin", trainResult.mlpBlob);
+});
+
+btnPrintPlots.addEventListener("click", () => {
+  if (!trainResult?.shotPlots) return;
+  const shots = trainResult.shotPlots.slice(0, 2);
+  for (let i = 0; i < shots.length; i++) {
+    const c = document.createElement("canvas");
+    drawShotPlot(c, shots[i], true);
+    c.toBlob((blob) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = `shot_${i + 1}_print.png`; a.click();
+      URL.revokeObjectURL(url);
+    }, "image/png");
+  }
 });
 
 btnDownloadLog.addEventListener("click", () => {
@@ -1209,6 +1222,7 @@ fileInputEl.addEventListener("change", async (e) => {
     showResults(result);
     btnDownloadModels.disabled = false;
     btnDownloadLog.disabled = false;
+    btnPrintPlots.disabled = false;
     // Model upload only available if serial is connected
     btnLoadModel.disabled = !serialIO;
     resultsEl.scrollIntoView({ behavior: "smooth", block: "start" });
